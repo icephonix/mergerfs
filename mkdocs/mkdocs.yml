@@ -7,7 +7,10 @@ edit_uri: edit/master/mkdocs/docs/
 docs_dir: docs
 plugins:
   - search
-  - tags
+  - mike
+extra:
+  version:
+    provider: mike
 theme:
   name: material
   logo: logo.png
@@ -66,13 +69,14 @@ nav:
   - config/options.md
   - config/deprecated_options.md
   - config/branches.md
-  - config/branches_mount_timeout.md
+  - config/branches-mount-timeout.md
   - config/functions_categories_policies.md
   - config/minfreespace.md
   - config/func_readdir.md
   - config/rename_and_link.md
   - config/moveonenospc.md
   - config/cache.md
+  - config/passthrough.md
   - config/readahead.md
   - config/inodecalc.md
   - config/threads.md
@@ -96,8 +100,8 @@ nav:
 - tips_notes.md
 - known_issues_bugs.md
 - project_comparisons.md
-- performance.md
 - benchmarking.md
+- performance.md
 - tooling.md
 - usage_patterns.md
 - FAQ:

@@ -27,16 +27,12 @@
 #include "fuse_symlink.hpp"
 #include "ugid.hpp"
 
-#include "ghc/filesystem.hpp"
-
 #include <algorithm>
+#include <filesystem>
+#include <iostream>
 #include <string>
 #include <vector>
 
-#include <iostream>
-
-using std::string;
-namespace gfs = ghc::filesystem;
 
 namespace error
 {
@@ -62,12 +58,12 @@ namespace l
 {
   static
   bool
-  contains(const StrVec &haystack_,
-           const char   *needle_)
+  contains(const std::vector<Branch*> &haystack_,
+           const char                 *needle_)
   {
     for(auto &hay : haystack_)
       {
-        if(hay == needle_)
+        if(hay->path == needle_)
           return true;
       }
 
@@ -76,8 +72,8 @@ namespace l
 
   static
   bool
-  contains(const StrVec &haystack_,
-           const string &needle_)
+  contains(const std::vector<Branch*> &haystack_,
+           const std::string          &needle_)
   {
     return l::contains(haystack_,needle_.c_str());
   }
@@ -91,40 +87,26 @@ namespace l
   }
 
   static
-  void
-  remove(const Branches::CPtr &branches_,
-         const std::string    &relpath_)
-  {
-    std::string fullpath;
-
-    for(auto &branch : *branches_)
-      {
-        fullpath = fs::path::make(branch.path,relpath_);
-        fs::remove(fullpath);
-      }
-  }
-
-  static
   int
-  rename_create_path(const Policy::Search &searchPolicy_,
-                     const Policy::Action &actionPolicy_,
-                     const Branches::CPtr &branches_,
-                     const gfs::path      &oldfusepath_,
-                     const gfs::path      &newfusepath_)
+  rename_create_path(const Policy::Search        &searchPolicy_,
+                     const Policy::Action        &actionPolicy_,
+                     const Branches::Ptr         &branches_,
+                     const std::filesystem::path &oldfusepath_,
+                     const std::filesystem::path &newfusepath_)
   {
     int rv;
     int error;
     StrVec toremove;
-    StrVec newbasepath;
-    StrVec oldbasepaths;
-    gfs::path oldfullpath;
-    gfs::path newfullpath;
+    std::vector<Branch*> newbranches;
+    std::vector<Branch*> oldbranches;
+    std::filesystem::path oldfullpath;
+    std::filesystem::path newfullpath;
 
-    rv = actionPolicy_(branches_,oldfusepath_,&oldbasepaths);
+    rv = actionPolicy_(branches_,oldfusepath_,oldbranches);
     if(rv == -1)
       return -errno;
 
-    rv = searchPolicy_(branches_,newfusepath_.parent_path(),&newbasepath);
+    rv = searchPolicy_(branches_,newfusepath_.parent_path(),newbranches);
     if(rv == -1)
       return -errno;
 
@@ -134,7 +116,7 @@ namespace l
         newfullpath  = branch.path;
         newfullpath += newfusepath_;
 
-        if(!l::contains(oldbasepaths,branch.path))
+        if(!l::contains(oldbranches,branch.path))
           {
             toremove.push_back(newfullpath);
             continue;
@@ -146,7 +128,9 @@ namespace l
         rv = fs::rename(oldfullpath,newfullpath);
         if(rv == -1)
           {
-            rv = fs::clonepath_as_root(newbasepath[0],branch.path,newfusepath_.parent_path());
+            rv = fs::clonepath_as_root(newbranches[0]->path,
+                                       branch.path,
+                                       newfusepath_.parent_path());
             if(rv == 0)
               rv = fs::rename(oldfullpath,newfullpath);
           }
@@ -164,19 +148,19 @@ namespace l
 
   static
   int
-  rename_preserve_path(const Policy::Action &actionPolicy_,
-                       const Branches::CPtr &branches_,
-                       const gfs::path      &oldfusepath_,
-                       const gfs::path      &newfusepath_)
+  rename_preserve_path(const Policy::Action        &actionPolicy_,
+                       const Branches::Ptr         &branches_,
+                       const std::filesystem::path &oldfusepath_,
+                       const std::filesystem::path &newfusepath_)
   {
     int rv;
     bool success;
     StrVec toremove;
-    StrVec oldbasepaths;
-    gfs::path oldfullpath;
-    gfs::path newfullpath;
+    std::vector<Branch*> oldbranches;
+    std::filesystem::path oldfullpath;
+    std::filesystem::path newfullpath;
 
-    rv = actionPolicy_(branches_,oldfusepath_,&oldbasepaths);
+    rv = actionPolicy_(branches_,oldfusepath_,oldbranches);
     if(rv == -1)
       return -errno;
 
@@ -186,7 +170,7 @@ namespace l
         newfullpath  = branch.path;
         newfullpath += newfusepath_;
 
-        if(!l::contains(oldbasepaths,branch.path))
+        if(!l::contains(oldbranches,branch.path))
           {
             toremove.push_back(newfullpath);
             continue;
@@ -216,19 +200,19 @@ namespace l
 
   static
   void
-  rename_exdev_rename_back(const StrVec    &basepaths_,
-                           const gfs::path &oldfusepath_)
+  rename_exdev_rename_back(const std::vector<Branch*>  &branches_,
+                           const std::filesystem::path &oldfusepath_)
   {
-    gfs::path oldpath;
-    gfs::path newpath;
+    std::filesystem::path oldpath;
+    std::filesystem::path newpath;
 
-    for(auto &basepath : basepaths_)
+    for(auto &branch : branches_)
       {
-        oldpath  = basepath;
+        oldpath  = branch->path;
         oldpath /= ".mergerfs_rename_exdev";
         oldpath += oldfusepath_;
 
-        newpath  = basepath;
+        newpath  = branch->path;
         newpath += oldfusepath_;
 
         fs::rename(oldpath,newpath);
@@ -237,24 +221,24 @@ namespace l
 
   static
   int
-  rename_exdev_rename_target(const Policy::Action &actionPolicy_,
-                             const Branches::CPtr &branches_,
-                             const gfs::path      &oldfusepath_,
-                             StrVec               *basepaths_)
+  rename_exdev_rename_target(const Policy::Action        &actionPolicy_,
+                             const Branches::Ptr         &ibranches_,
+                             const std::filesystem::path &oldfusepath_,
+                             std::vector<Branch*>        &obranches_)
   {
     int rv;
-    gfs::path clonesrc;
-    gfs::path clonetgt;
+    std::filesystem::path clonesrc;
+    std::filesystem::path clonetgt;
 
-    rv = actionPolicy_(branches_,oldfusepath_,basepaths_);
+    rv = actionPolicy_(ibranches_,oldfusepath_,obranches_);
     if(rv == -1)
       return -errno;
 
     ugid::SetRootGuard ugidGuard;
-    for(auto &basepath : *basepaths_)
+    for(auto &branch : obranches_)
       {
-        clonesrc  = basepath;
-        clonetgt  = basepath;
+        clonesrc  = branch->path;
+        clonetgt  = branch->path;
         clonetgt /= ".mergerfs_rename_exdev";
 
         rv = fs::clonepath(clonesrc,clonetgt,oldfusepath_.parent_path());
@@ -278,24 +262,24 @@ namespace l
     return 0;
 
   error:
-    l::rename_exdev_rename_back(*basepaths_,oldfusepath_);
+    l::rename_exdev_rename_back(obranches_,oldfusepath_);
 
     return -EXDEV;
   }
 
   static
   int
-  rename_exdev_rel_symlink(const Policy::Action &actionPolicy_,
-                           const Branches::CPtr &branches_,
-                           const gfs::path      &oldfusepath_,
-                           const gfs::path      &newfusepath_)
+  rename_exdev_rel_symlink(const Policy::Action        &actionPolicy_,
+                           const Branches::Ptr         &branches_,
+                           const std::filesystem::path &oldfusepath_,
+                           const std::filesystem::path &newfusepath_)
   {
     int rv;
-    StrVec basepaths;
-    gfs::path target;
-    gfs::path linkpath;
+    std::filesystem::path target;
+    std::filesystem::path linkpath;
+    std::vector<Branch*> branches;
 
-    rv = l::rename_exdev_rename_target(actionPolicy_,branches_,oldfusepath_,&basepaths);
+    rv = l::rename_exdev_rename_target(actionPolicy_,branches_,oldfusepath_,branches);
     if(rv < 0)
       return rv;
 
@@ -306,25 +290,25 @@ namespace l
 
     rv = FUSE::symlink(target.c_str(),linkpath.c_str());
     if(rv < 0)
-      l::rename_exdev_rename_back(basepaths,oldfusepath_);
+      l::rename_exdev_rename_back(branches,oldfusepath_);
 
     return rv;
   }
 
   static
   int
-  rename_exdev_abs_symlink(const Policy::Action &actionPolicy_,
-                           const Branches::CPtr &branches_,
-                           const gfs::path      &mount_,
-                           const gfs::path      &oldfusepath_,
-                           const gfs::path      &newfusepath_)
+  rename_exdev_abs_symlink(const Policy::Action        &actionPolicy_,
+                           const Branches::Ptr         &branches_,
+                           const std::filesystem::path &mount_,
+                           const std::filesystem::path &oldfusepath_,
+                           const std::filesystem::path &newfusepath_)
   {
     int rv;
-    StrVec basepaths;
-    gfs::path target;
-    gfs::path linkpath;
+    std::filesystem::path target;
+    std::filesystem::path linkpath;
+    std::vector<Branch*> branches;
 
-    rv = l::rename_exdev_rename_target(actionPolicy_,branches_,oldfusepath_,&basepaths);
+    rv = l::rename_exdev_rename_target(actionPolicy_,branches_,oldfusepath_,branches);
     if(rv < 0)
       return rv;
 
@@ -335,16 +319,16 @@ namespace l
 
     rv = FUSE::symlink(target.c_str(),linkpath.c_str());
     if(rv < 0)
-      l::rename_exdev_rename_back(basepaths,oldfusepath_);
+      l::rename_exdev_rename_back(branches,oldfusepath_);
 
     return rv;
   }
 
   static
   int
-  rename_exdev(Config::Read    &cfg_,
-               const gfs::path &oldfusepath_,
-               const gfs::path &newfusepath_)
+  rename_exdev(Config::Read                &cfg_,
+               const std::filesystem::path &oldfusepath_,
+               const std::filesystem::path &newfusepath_)
   {
     switch(cfg_->rename_exdev)
       {
@@ -368,9 +352,9 @@ namespace l
 
   static
   int
-  rename(Config::Read    &cfg_,
-         const gfs::path &oldpath_,
-         const gfs::path &newpath_)
+  rename(Config::Read                &cfg_,
+         const std::filesystem::path &oldpath_,
+         const std::filesystem::path &newpath_)
   {
     if(cfg_->func.create.policy.path_preserving() && !cfg_->ignorepponrename)
       return l::rename_preserve_path(cfg_->func.rename.policy,
@@ -394,8 +378,8 @@ namespace FUSE
   {
     int rv;
     Config::Read cfg;
-    gfs::path oldfusepath(oldfusepath_);
-    gfs::path newfusepath(newfusepath_);
+    std::filesystem::path oldfusepath(oldfusepath_);
+    std::filesystem::path newfusepath(newfusepath_);
     const fuse_context *fc = fuse_get_context();
     const ugid::Set     ugid(fc->uid,fc->gid);
 
