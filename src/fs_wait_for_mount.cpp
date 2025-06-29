@@ -19,34 +19,23 @@
 #include "fs_wait_for_mount.hpp"
 #include "syslog.hpp"
 
+#include "fs_mount.hpp"
 #include "fs_exists.hpp"
-#include "fs_lstat.hpp"
 #include "fs_lgetxattr.hpp"
+#include "fs_lstat.hpp"
+#include "fs_stat.hpp"
 
 #include <functional>
 #include <thread>
-#include <unordered_set>
+#include <set>
 
 
 namespace fs
 {
-  typedef std::unordered_set<fs::Path> PathSet;
+  typedef std::set<fs::Path> PathSet;
 }
 
 constexpr std::chrono::milliseconds SLEEP_DURATION = std::chrono::milliseconds(333);
-
-namespace std
-{
-  template<>
-  struct hash<fs::Path>
-  {
-    std::size_t
-    operator()(fs::Path const &path_) const noexcept
-    {
-      return std::hash<std::string>{}(path_.string());
-    }
-  };
-}
 
 static
 bool
@@ -111,9 +100,9 @@ _wait_for_mount(const struct stat               &src_st_,
                 const std::chrono::milliseconds &timeout_)
 {
   bool first_loop;
-  fs::PathVector                                     successes;
-  fs::PathVector                                     failures;
-  std::unordered_set<fs::Path>                       tgt_paths;
+  fs::PathVector successes;
+  fs::PathVector failures;
+  fs::PathSet    tgt_paths;
   std::chrono::time_point<std::chrono::steady_clock> now;
   std::chrono::time_point<std::chrono::steady_clock> deadline;
 
@@ -135,13 +124,13 @@ _wait_for_mount(const struct stat               &src_st_,
       for(const auto &path : successes)
         {
           tgt_paths.erase(path);
-          SysLog::info("{} is mounted",path.string());
+          SysLog::info("{} is ready",path.string());
         }
 
       if(first_loop)
         {
           for(const auto &path : failures)
-            SysLog::notice("{} is not mounted, waiting",path.string());
+            SysLog::notice("{} is not ready, waiting",path.string());
           first_loop = false;
         }
 
@@ -150,7 +139,7 @@ _wait_for_mount(const struct stat               &src_st_,
     }
 
   for(auto const &path : failures)
-    SysLog::notice("{} not mounted within timeout",path.string());
+    SysLog::notice("{} not ready within timeout",path.string());
 
   return failures.size();
 }
@@ -168,6 +157,19 @@ fs::wait_for_mount(const fs::Path                  &src_path_,
     SysLog::error("Error stat'ing mount path: {} ({})",
                   src_path_.string(),
                   strerror(errno));
+
+  for(auto &tgt_path : tgt_paths_)
+    {
+      int rv;
+
+      if(_branch_is_mounted(src_st,tgt_path))
+        continue;
+
+      rv = fs::mount(tgt_path);
+      SysLog::notice("mount {}: {}",
+                     tgt_path.string(),
+                     ((rv == 0) ? "success" : "fail"));
+    }
 
   return ::_wait_for_mount(src_st,tgt_paths_,timeout_);
 }

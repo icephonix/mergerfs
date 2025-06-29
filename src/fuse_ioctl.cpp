@@ -25,6 +25,7 @@
 #include "fs_open.hpp"
 #include "fs_path.hpp"
 #include "gidcache.hpp"
+#include "mergerfs_ioctl.hpp"
 #include "str.hpp"
 #include "ugid.hpp"
 
@@ -33,22 +34,6 @@
 
 #include <fcntl.h>
 #include <string.h>
-
-using std::string;
-using std::vector;
-
-#ifndef _IOC_TYPE
-#define _IOC_TYPE(X) (((X) >> 8) & 0xFF)
-#endif
-
-typedef char IOCTL_BUF[4096];
-#define IOCTL_APP_TYPE             0xDF
-#define IOCTL_FILE_INFO            _IOWR(IOCTL_APP_TYPE,0,IOCTL_BUF)
-#define IOCTL_GC                   _IO(IOCTL_APP_TYPE,1)
-#define IOCTL_GC1                  _IO(IOCTL_APP_TYPE,2)
-#define IOCTL_INVALIDATE_ALL_NODES _IO(IOCTL_APP_TYPE,3)
-#define IOCTL_INVALIDATE_GID_CACHE _IO(IOCTL_APP_TYPE,4)
-
 
 // From linux/btrfs.h
 #define BTRFS_IOCTL_MAGIC 0x94
@@ -146,14 +131,14 @@ namespace l
   {
     int fd;
     int rv;
-    string fullpath;
-    StrVec basepaths;
+    std::string fullpath;
+    std::vector<Branch*> branches;
 
-    rv = searchFunc_(branches_,fusepath_,&basepaths);
+    rv = searchFunc_(branches_,fusepath_,branches);
     if(rv == -1)
       return -errno;
 
-    fullpath = fs::path::make(basepaths[0],fusepath_);
+    fullpath = fs::path::make(branches[0]->path,fusepath_);
 
     fd = fs::open(fullpath,O_RDONLY|O_NOATIME|O_NONBLOCK);
     if(fd == -1)
@@ -210,13 +195,13 @@ namespace l
                 void                 *data_)
   {
     int rv;
-    StrVec basepaths;
+    std::vector<Branch*> branches;
 
-    rv = searchFunc_(branches_,fusepath_,&basepaths);
+    rv = searchFunc_(branches_,fusepath_,branches);
     if(rv == -1)
       return -errno;
 
-    return l::strcpy(basepaths[0],data_);
+    return l::strcpy(branches[0]->path,data_);
   }
 
   static
@@ -246,19 +231,20 @@ namespace l
   static
   int
   file_fullpath(const Policy::Search &searchFunc_,
-                const Branches       &branches_,
-                const string         &fusepath_,
+                const Branches       &ibranches_,
+                const std::string    &fusepath_,
                 void                 *data_)
   {
     int rv;
-    string fullpath;
     StrVec basepaths;
+    std::string fullpath;
+    std::vector<Branch*> obranches;
 
-    rv = searchFunc_(branches_,fusepath_,&basepaths);
+    rv = searchFunc_(ibranches_,fusepath_,obranches);
     if(rv == -1)
       return -errno;
 
-    fullpath = fs::path::make(basepaths[0],fusepath_);
+    fullpath = fs::path::make(obranches[0]->path,fusepath_);
 
     return l::strcpy(fullpath,data_);
   }
@@ -283,10 +269,10 @@ namespace l
                 void                   *data_)
   {
     Config::Read cfg;
-    string concated;
+    std::string concated;
     StrVec paths;
     StrVec branches;
-    string &fusepath = reinterpret_cast<FH*>(ffi_->fh)->fusepath;
+    std::string &fusepath = reinterpret_cast<FH*>(ffi_->fh)->fusepath;
 
     cfg->branches->to_paths(branches);
 

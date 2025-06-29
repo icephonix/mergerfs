@@ -22,7 +22,7 @@ LN        = ln
 FIND 	  = find
 INSTALL   = install
 MKTEMP    = mktemp
-STRIP     = strip
+STRIP    ?= strip
 SED       = sed
 GIT2DEBCL = ./buildtools/git2debcl
 PKGCONFIG = pkg-config
@@ -40,7 +40,7 @@ UGID_USE_RWLOCK = 0
 ifeq ($(NDEBUG),1)
 OPT_FLAGS := -O2 -DNDEBUG
 else
-OPT_FLAGS := -O0 -DDEBUG -g -fsanitize=undefined
+OPT_FLAGS := -O0 -DDEBUG -g
 endif
 
 ifeq ($(STATIC),1)
@@ -76,6 +76,7 @@ CXXFLAGS    := \
               -std=c++17 \
               $(STATIC_FLAGS) \
               $(LTO_FLAGS) \
+	      -Isrc \
               -Wall \
               -Wno-unused-result \
               -MMD
@@ -92,7 +93,8 @@ TESTS_FLAGS = \
 LDFLAGS := \
     ${LDFLAGS} \
     -pthread \
-    -lrt
+    -lrt \
+    -lstdc++fs
 
 # https://www.gnu.org/prep/standards/html_node/Directory-Variables.html
 DESTDIR       =
@@ -134,6 +136,7 @@ build/tests: build/mergerfs tests-objects
 	$(CXX) $(CXXFLAGS) $(TESTS_FLAGS) $(FUSE_FLAGS) $(MFS_FLAGS) $(CPPFLAGS) $(TESTS_OBJS) -o $@ libfuse/build/libfuse.a $(LDFLAGS)
 
 mergerfs: build/mergerfs
+	ln -fs "mergerfs" "build/fsck.mergerfs"
 
 tests: build/tests
 
@@ -179,7 +182,8 @@ install: install-base install-mount-tools install-preload install-man
 
 install-base: build/mergerfs
 	$(MKDIR) -p "$(INSTALLBINDIR)"
-	$(INSTALL) -v -m 0755 build/mergerfs "$(INSTALLBINDIR)/mergerfs"
+	$(INSTALL) -v -m 0755 "build/mergerfs" "$(INSTALLBINDIR)/mergerfs"
+	ln -s "mergerfs" "${INSTALLBINDIR}/fsck.mergerfs"
 
 install-mount-tools: install-base
 	$(MKDIR) -p "$(INSTALLBINDIR)"
@@ -229,14 +233,14 @@ endif
 signed-deb:
 	$(MAKE) distclean
 	$(MAKE) debian-changelog
-#	dpkg-source -b .
-	dpkg-buildpackage -nc
+	fakeroot dpkg-buildpackage -nc
 
 deb:
 	$(MAKE) distclean
 	$(MAKE) debian-changelog
-#	dpkg-source -b .
-	dpkg-buildpackage -nc -uc -us
+	fakeroot dpkg-buildpackage -nc -uc -us
+	mkdir -p ./build/pkgs/
+	mv -v ../mergerfs*deb ./build/pkgs/
 
 .PHONY: rpm-clean
 rpm-clean:
@@ -264,6 +268,11 @@ libfuse:
 release:
 	./buildtools/build-release \
 		--target=all \
+		--cleanup \
+		--branch=$(shell git branch --show-current)
+release-sample:
+	./buildtools/build-release \
+		--target=debian.12.amd64 \
 		--cleanup \
 		--branch=$(shell git branch --show-current)
 release-amd64:

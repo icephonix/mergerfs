@@ -10,6 +10,7 @@
 #define _GNU_SOURCE
 #endif
 
+#include "mutex.hpp"
 #include "lfmp.h"
 
 #include "config.h"
@@ -279,6 +280,11 @@ fill_open(struct fuse_open_out   *arg_,
     arg_->open_flags |= FOPEN_PARALLEL_DIRECT_WRITES;
   if(ffi_->noflush)
     arg_->open_flags |= FOPEN_NOFLUSH;
+  if(ffi_->passthrough && (ffi_->backing_id > 0))
+    {
+      arg_->open_flags |= FOPEN_PASSTHROUGH;
+      arg_->backing_id  = ffi_->backing_id;
+    }
 }
 
 int
@@ -1121,8 +1127,7 @@ do_init(fuse_req_t             req,
   inargflags = 0;
   outargflags = 0;
 
-  if(f->debug)
-    debug_fuse_init_in(arg);
+  fuse_syslog_fuse_init_in(arg);
 
   f->conn.proto_major = arg->major;
   f->conn.proto_minor = arg->minor;
@@ -1193,6 +1198,12 @@ do_init(fuse_req_t             req,
         f->conn.capable |= FUSE_CAP_DIRECT_IO_ALLOW_MMAP;
       if(inargflags & FUSE_CREATE_SUPP_GROUP)
         f->conn.capable |= FUSE_CAP_CREATE_SUPP_GROUP;
+      if(inargflags & FUSE_PASSTHROUGH)
+        f->conn.capable |= FUSE_CAP_PASSTHROUGH;
+      if(inargflags & FUSE_HANDLE_KILLPRIV)
+        f->conn.capable |= FUSE_CAP_HANDLE_KILLPRIV;
+      if(inargflags & FUSE_HANDLE_KILLPRIV_V2)
+        f->conn.capable |= FUSE_CAP_HANDLE_KILLPRIV_V2;
     }
   else
     {
@@ -1266,6 +1277,15 @@ do_init(fuse_req_t             req,
     outargflags |= FUSE_CREATE_SUPP_GROUP;
   if(f->conn.want & FUSE_CAP_DIRECT_IO_ALLOW_MMAP)
     outargflags |= FUSE_DIRECT_IO_ALLOW_MMAP;
+  if(f->conn.want & FUSE_CAP_HANDLE_KILLPRIV)
+    outargflags |= FUSE_HANDLE_KILLPRIV;
+  if(f->conn.want & FUSE_CAP_HANDLE_KILLPRIV_V2)
+    outargflags |= FUSE_HANDLE_KILLPRIV_V2;
+  if(f->conn.want & FUSE_CAP_PASSTHROUGH)
+    {
+      outargflags |= FUSE_PASSTHROUGH;
+      outarg.max_stack_depth = 2;
+    }
 
   if(inargflags & FUSE_INIT_EXT)
     {
@@ -1303,8 +1323,7 @@ do_init(fuse_req_t             req,
   else
     outargsize = sizeof(outarg);
 
-  if(f->debug)
-    debug_fuse_init_out(req->unique,&outarg,outargsize);
+  fuse_syslog_fuse_init_out(&outarg);
 
   send_reply_ok(req, &outarg, outargsize);
 }
@@ -1361,7 +1380,7 @@ do_notify_reply(fuse_req_t             req,
   struct fuse_notify_req *nreq;
   struct fuse_notify_req *head;
 
-  pthread_mutex_lock(&f->lock);
+  mutex_lock(&f->lock);
   head = &f->notify_list;
   for(nreq = head->next; nreq != head; nreq = nreq->next)
     {
@@ -1371,7 +1390,7 @@ do_notify_reply(fuse_req_t             req,
           break;
         }
     }
-  pthread_mutex_unlock(&f->lock);
+  mutex_unlock(&f->lock);
 
   if(nreq != head)
     nreq->reply(nreq, req, hdr_->nodeid, &hdr_[1]);
@@ -1666,12 +1685,12 @@ fuse_lowlevel_notify_retrieve(struct fuse_chan *ch,
   if(rreq == NULL)
     return -ENOMEM;
 
-  pthread_mutex_lock(&f->lock);
+  mutex_lock(&f->lock);
   rreq->cookie = cookie;
   rreq->nreq.unique = f->notify_ctr++;
   rreq->nreq.reply = fuse_ll_retrieve_reply;
   list_add_nreq(&rreq->nreq, &f->notify_list);
-  pthread_mutex_unlock(&f->lock);
+  mutex_unlock(&f->lock);
 
   outarg.notify_unique = rreq->nreq.unique;
   outarg.nodeid = ino;
@@ -1684,9 +1703,9 @@ fuse_lowlevel_notify_retrieve(struct fuse_chan *ch,
   err = send_notify_iov(f, ch, FUSE_NOTIFY_RETRIEVE, iov, 2);
   if(err)
     {
-      pthread_mutex_lock(&f->lock);
+      mutex_lock(&f->lock);
       list_del_nreq(&rreq->nreq);
-      pthread_mutex_unlock(&f->lock);
+      mutex_unlock(&f->lock);
       free(rreq);
     }
 
@@ -1866,7 +1885,7 @@ fuse_ll_destroy(void *data)
   if(llp != NULL)
     fuse_ll_pipe_free(llp);
   pthread_key_delete(f->pipe_key);
-  pthread_mutex_destroy(&f->lock);
+  mutex_destroy(&f->lock);
   free(f);
 
   lfmp_clear(&g_FMP_fuse_req);
@@ -1942,11 +1961,14 @@ fuse_ll_buf_process_read(struct fuse_session *se_,
   if(req == NULL)
     return fuse_send_enomem(se_->f,se_->ch,in->unique);
 
-  req->unique  = in->unique;
-  req->ctx.uid = in->uid;
-  req->ctx.gid = in->gid;
-  req->ctx.pid = in->pid;
-  req->ch      = se_->ch;
+  req->unique     = in->unique;
+  req->ctx.opcode = in->opcode;
+  req->ctx.unique = in->unique;
+  req->ctx.nodeid = in->nodeid;
+  req->ctx.uid    = in->uid;
+  req->ctx.gid    = in->gid;
+  req->ctx.pid    = in->pid;
+  req->ch         = se_->ch;
 
   err = ENOSYS;
   if(in->opcode >= FUSE_MAXOPS)
@@ -1978,11 +2000,14 @@ fuse_ll_buf_process_read_init(struct fuse_session *se_,
   if(req == NULL)
     return fuse_send_enomem(se_->f,se_->ch,in->unique);
 
-  req->unique  = in->unique;
-  req->ctx.uid = in->uid;
-  req->ctx.gid = in->gid;
-  req->ctx.pid = in->pid;
-  req->ch      = se_->ch;
+  req->unique     = in->unique;
+  req->ctx.opcode = in->opcode;
+  req->ctx.unique = in->unique;
+  req->ctx.nodeid = in->nodeid;
+  req->ctx.uid    = in->uid;
+  req->ctx.gid    = in->gid;
+  req->ctx.pid    = in->pid;
+  req->ch         = se_->ch;
 
   err = EIO;
   if(in->opcode != FUSE_INIT)
@@ -2033,7 +2058,7 @@ fuse_lowlevel_new_common(struct fuse_args               *args,
   f->conn.max_readahead = UINT_MAX;
   list_init_nreq(&f->notify_list);
   f->notify_ctr = 1;
-  fuse_mutex_init(&f->lock);
+  mutex_init(&f->lock);
 
   err = pthread_key_create(&f->pipe_key, fuse_ll_pipe_destructor);
   if(err)
@@ -2063,7 +2088,7 @@ fuse_lowlevel_new_common(struct fuse_args               *args,
  out_key_destroy:
   pthread_key_delete(f->pipe_key);
  out_free:
-  pthread_mutex_destroy(&f->lock);
+  mutex_destroy(&f->lock);
   free(f);
  out:
   return NULL;

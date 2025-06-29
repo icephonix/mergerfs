@@ -17,29 +17,50 @@
 #pragma once
 
 #include "fh.hpp"
+#include "branch.hpp"
 
-#include <cstdint>
 #include <string>
 #include <mutex>
+
+#include "int_types.h"
 
 
 class FileInfo : public FH
 {
 public:
-  FileInfo(const int          fd_,
-           const std::string  branchpath_,
-           const char        *fusepath_,
-           const bool         direct_io_)
+  FileInfo(const int     fd_,
+           const Branch &branch_,
+           const char   *fusepath_,
+           const bool    direct_io_)
     : FH(fusepath_),
       fd(fd_),
-      branchpath(std::move(branchpath_)),
+      branch(branch_),
       direct_io(direct_io_)
+  {
+  }
+
+  FileInfo(const int     fd_,
+           const Branch *branch_,
+           const char   *fusepath_,
+           const bool    direct_io_)
+    : FH(fusepath_),
+      fd(fd_),
+      branch(*branch_),
+      direct_io(direct_io_)
+  {
+  }
+
+  FileInfo(const FileInfo *fi_)
+    : FH(fi_->fusepath),
+      fd(fi_->fd),
+      branch(fi_->branch),
+      direct_io(fi_->direct_io)
   {
   }
 
 public:
   int fd;
-  std::string branchpath;
-  uint32_t direct_io:1;
+  Branch branch;
+  u32 direct_io:1;
   std::mutex mutex;
 };

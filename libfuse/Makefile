@@ -12,7 +12,7 @@ endif
 ifeq ($(NDEBUG),1)
 OPT_FLAGS := -O2 -DNDEBUG
 else
-OPT_FLAGS := -O0 -DDEBUG -g -fsanitize=undefined
+OPT_FLAGS := -O0 -DDEBUG -g
 endif
 
 ifeq ($(LTO),1)
@@ -43,8 +43,6 @@ SRC_C = \
 	lib/debug.c \
 	lib/fuse_dirents.c \
 	lib/fuse_lowlevel.c \
-	lib/node.c \
-	lib/fuse_node.c \
 	lib/fuse_opt.c \
 	lib/fuse_session.c \
 	lib/fuse_signals.c \
@@ -57,7 +55,8 @@ SRC_CPP = \
 	lib/fuse_loop.cpp \
 	lib/fuse_msgbuf.cpp \
 	lib/pin_threads.cpp \
-	lib/format.cpp
+	lib/format.cpp \
+	lib/node.cpp
 
 OBJS_C   = $(SRC_C:lib/%.c=build/%.o)
 OBJS_CPP = $(SRC_CPP:lib/%.cpp=build/%.o)
@@ -138,7 +137,7 @@ strip:
 install-utils: mergerfs-fusermount mount.mergerfs strip
 	install -D build/mergerfs-fusermount "$(INSTALLBINDIR)/mergerfs-fusermount"
 	install -D build/mount.mergerfs "$(INSTALLSBINDIR)/mount.mergerfs"
-	chown root "$(INSTALLBINDIR)/mergerfs-fusermount"
+	chown root:root "$(INSTALLBINDIR)/mergerfs-fusermount"
 	chmod u+s "$(INSTALLBINDIR)/mergerfs-fusermount"
 
 install: $(INSTALLUTILS)
